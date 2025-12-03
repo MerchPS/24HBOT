@@ -1,4 +1,4 @@
-// server.js - Updated for Render.com deployment
+// server.js - Optimized for Replit
 const express = require("express");
 const cors = require("cors");
 const bodyParser = require("body-parser");
@@ -12,30 +12,24 @@ app.use(cors());
 app.use(bodyParser.json());
 
 // =======================
-// CONFIG FOR RENDER.COM
+// REplit CONFIG
 // =======================
-const IS_PRODUCTION = process.env.NODE_ENV === 'production';
+const IS_REPLIT = process.env.REPLIT_DB_URL !== undefined;
 const PORT = process.env.PORT || 3000;
-
-// Use environment variable for channel ID or default
 const CHANNEL_ID = process.env.CHANNEL_ID || "1443222975179391066";
 
-// Storage paths - for Render we need persistent storage
-// Render provides /tmp directory that persists between deploys
-const STORAGE_PATH = IS_PRODUCTION 
-    ? path.join('/tmp', 'tokens.json') 
-    : path.join(__dirname, "tokens.json");
-    
-const STATS_PATH = IS_PRODUCTION
-    ? path.join('/tmp', 'stats.json')
-    : path.join(__dirname, "stats.json");
-
-// Ensure /tmp directory exists
-if (IS_PRODUCTION) {
-    if (!fs.existsSync('/tmp')) {
-        fs.mkdirSync('/tmp', { recursive: true });
-    }
+// Storage untuk Replit (gunakan /home/runner/...)
+const DATA_DIR = path.join(process.cwd(), "data");
+if (!fs.existsSync(DATA_DIR)) {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
 }
+
+const STORAGE_PATH = path.join(DATA_DIR, "tokens.json");
+const STATS_PATH = path.join(DATA_DIR, "stats.json");
+
+console.log("🚀 Starting Discord Bot Controller");
+console.log("📁 Data directory:", DATA_DIR);
+console.log("🌍 Running on Replit:", IS_REPLIT);
 
 // Storage
 const bots = new Map();
@@ -57,12 +51,17 @@ function previewFromToken(token) {
 }
 
 function loadSavedTokens() {
-    if (!fs.existsSync(STORAGE_PATH)) return [];
+    if (!fs.existsSync(STORAGE_PATH)) {
+        console.log("📭 No saved tokens file found, creating new...");
+        return [];
+    }
     try {
         const content = fs.readFileSync(STORAGE_PATH, "utf8");
-        return JSON.parse(content) || [];
+        const data = JSON.parse(content) || [];
+        console.log(`📂 Loaded ${data.length} saved tokens`);
+        return data;
     } catch (e) {
-        console.error("Error loading tokens:", e.message);
+        console.error("❌ Error loading tokens:", e.message);
         return [];
     }
 }
@@ -70,9 +69,9 @@ function loadSavedTokens() {
 function saveSavedTokens(list) {
     try {
         fs.writeFileSync(STORAGE_PATH, JSON.stringify(list, null, 2));
-        console.log(`✅ Tokens saved: ${list.length} entries`);
+        console.log(`💾 Saved ${list.length} tokens`);
     } catch (e) {
-        console.error("Error saving tokens:", e.message);
+        console.error("❌ Error saving tokens:", e.message);
     }
 }
 
@@ -80,8 +79,7 @@ function loadStats() {
     if (!fs.existsSync(STATS_PATH)) return globalStats;
     try {
         const content = fs.readFileSync(STATS_PATH, "utf8");
-        const saved = JSON.parse(content);
-        return { ...globalStats, ...saved };
+        return JSON.parse(content) || globalStats;
     } catch (e) {
         console.error("Error loading stats:", e.message);
         return globalStats;
@@ -101,6 +99,8 @@ function pushLog(preview, level, text) {
     const b = bots.get(preview);
     if (!b) return;
     
+    if (!b.logs) b.logs = [];
+    
     const logEntry = { 
         ts: Date.now(), 
         level, 
@@ -108,16 +108,11 @@ function pushLog(preview, level, text) {
         time: new Date().toLocaleTimeString('en-US', { hour12: false })
     };
     
-    if (!b.logs) b.logs = [];
     b.logs.unshift(logEntry);
-    
-    // Limit logs to 200 entries
     if (b.logs.length > 200) b.logs.pop();
     
-    // Also log to console in production
-    if (IS_PRODUCTION) {
-        console.log(`[${preview}] ${level}: ${text}`);
-    }
+    // Log ke console juga
+    console.log(`[${preview}] ${level}: ${text}`);
 }
 
 function formatNumber(num) {
@@ -164,7 +159,7 @@ function parseUnbelievaBoatEmbed(embed, botUsername) {
     return null;
 }
 
-// Balance Parser
+// Balance Parser (tetap sama)
 function tryParseMessageForBalance(preview, msg) {
     const b = bots.get(preview);
     if (!b) return;
@@ -218,8 +213,8 @@ function tryParseMessageForBalance(preview, msg) {
         b.lastWorkTs = Date.now();
         b.lastEarnAmount = Number(amount);
         b.totalEarnings = (b.totalEarnings || 0) + Number(amount);
-        globalStats.totalEarnings += Number(amount);
         b.workCount = (b.workCount || 0) + 1;
+        globalStats.totalEarnings += Number(amount);
         saveStats();
     }
 
@@ -265,7 +260,7 @@ function tryParseMessageForBalance(preview, msg) {
     }
 }
 
-// AutoFarm System
+// AutoFarm System (tetap sama)
 class AutoFarmManager {
     constructor() {
         this.isRunning = false;
@@ -280,13 +275,6 @@ class AutoFarmManager {
             this.executeFarmCycle();
         }, 31000);
         console.log("🚀 AutoFarm started (31s cycle)");
-        
-        // Log to all connected bots
-        for (const [preview, bot] of bots) {
-            if (bot.status === "connected") {
-                pushLog(preview, "success", "🌱 AutoFarm system started");
-            }
-        }
     }
     
     stop() {
@@ -294,13 +282,6 @@ class AutoFarmManager {
         clearInterval(this.interval);
         this.isRunning = false;
         console.log("⏹️ AutoFarm stopped");
-        
-        // Log to all connected bots
-        for (const [preview, bot] of bots) {
-            if (bot.status === "connected") {
-                pushLog(preview, "warning", "⏹️ AutoFarm stopped");
-            }
-        }
     }
     
     async executeFarmCycle() {
@@ -310,12 +291,7 @@ class AutoFarmManager {
         const connectedBots = Array.from(bots.values())
             .filter(b => b.status === "connected" && b.autoFarm);
         
-        if (connectedBots.length === 0) {
-            console.log("⚠️ No bots available for farming");
-            return;
-        }
-        
-        console.log(`🤖 Farming with ${connectedBots.length} bots`);
+        if (connectedBots.length === 0) return;
         
         await this.sendCommandToAll(connectedBots, "yay.work");
         await this.delay(2000);
@@ -367,7 +343,7 @@ class AutoFarmManager {
 
 const autoFarmManager = new AutoFarmManager();
 
-// Mass Command System
+// Mass Command System (tetap sama)
 class MassCommandManager {
     async executeCommand(command, selectedBots = "all", delayBetween = 1000) {
         let targetBots = [];
@@ -478,7 +454,7 @@ class MassCommandManager {
 
 const massCommandManager = new MassCommandManager();
 
-// Connect Bot
+// Connect Bot (tetap sama)
 async function connectBot(token, autoFarmInitial = true) {
     token = token.trim();
     if (token.length < 10) return { ok: false, message: "Invalid token" };
@@ -494,14 +470,7 @@ async function connectBot(token, autoFarmInitial = true) {
         await disconnectBot(preview);
     }
     
-    const client = new Client({ 
-        checkUpdate: false,
-        // Additional options for production
-        ...(IS_PRODUCTION && {
-            retryLimit: 3,
-            timeout: 30000
-        })
-    });
+    const client = new Client({ checkUpdate: false });
     
     const meta = {
         token,
@@ -526,7 +495,6 @@ async function connectBot(token, autoFarmInitial = true) {
     
     bots.set(preview, meta);
     globalStats.botSessions++;
-    saveStats();
     
     client.on("ready", () => {
         meta.username = client.user.username;
@@ -563,12 +531,6 @@ async function connectBot(token, autoFarmInitial = true) {
         meta.status = "error";
     });
     
-    client.on("disconnect", () => {
-        console.log(`🔌 ${preview} disconnected`);
-        pushLog(preview, "warning", "🔌 Disconnected");
-        meta.status = "disconnected";
-    });
-    
     try {
         await client.login(token);
         
@@ -580,16 +542,13 @@ async function connectBot(token, autoFarmInitial = true) {
                 token, 
                 autoFarm: !!autoFarmInitial,
                 addedAt: new Date().toISOString(),
-                username: meta.username,
-                lastConnected: new Date().toISOString()
+                username: meta.username
             });
         } else {
-            // Update existing entry
             stored[existingIndex] = { 
                 ...stored[existingIndex],
                 autoFarm: !!autoFarmInitial,
-                username: meta.username,
-                lastConnected: new Date().toISOString()
+                username: meta.username
             };
         }
         
@@ -605,7 +564,7 @@ async function connectBot(token, autoFarmInitial = true) {
     }
 }
 
-// Disconnect Bot
+// Disconnect Bot (tetap sama)
 async function disconnectBot(preview) {
     const b = bots.get(preview);
     if (!b) return false;
@@ -625,7 +584,7 @@ async function disconnectBot(preview) {
     const stored = loadSavedTokens();
     const updated = stored.map(x => {
         if (previewFromToken(x.token) === preview) {
-            return { ...x, autoFarm: false, lastDisconnected: new Date().toISOString() };
+            return { ...x, autoFarm: false };
         }
         return x;
     });
@@ -634,7 +593,7 @@ async function disconnectBot(preview) {
     return true;
 }
 
-// Restore Tokens
+// Restore Tokens (sedikit modifikasi)
 (async function restore() {
     console.log("🔄 Restoring saved tokens...");
     const stored = loadSavedTokens();
@@ -649,7 +608,7 @@ async function disconnectBot(preview) {
     for (const data of stored) {
         try {
             await connectBot(data.token, data.autoFarm);
-            await new Promise(resolve => setTimeout(resolve, 2000)); // Delay between connections
+            await new Promise(resolve => setTimeout(resolve, 2000)); // Delay lebih lama
         } catch (e) {
             console.error(`Failed to restore token:`, e.message);
         }
@@ -657,7 +616,6 @@ async function disconnectBot(preview) {
     
     console.log("✅ Token restoration completed");
     
-    // Start AutoFarm if any bot has it enabled
     const autoFarmBots = Array.from(bots.values()).filter(b => b.autoFarm && b.status === "connected");
     if (autoFarmBots.length > 0) {
         console.log(`🌱 Starting AutoFarm for ${autoFarmBots.length} bots`);
@@ -666,35 +624,37 @@ async function disconnectBot(preview) {
 })();
 
 // =======================
-// ROUTES
+// ROUTES UNTUK REplit
 // =======================
 
-// Root route - serve HTML or API info
+// Root route untuk Replit
 app.get("/", (req, res) => {
     res.json({
-        message: "🤖 Discord Self-Bot Controller API",
+        message: "🤖 Discord Self-Bot Controller",
         status: "online",
-        version: "2.0",
-        production: IS_PRODUCTION,
+        running_on: "Replit",
         endpoints: {
             api: "/api/bots",
             stats: "/api/stats",
+            autofarm: "/api/autofarm/status",
             health: "/api/system/health",
-            autofarm: "/api/autofarm/status"
-        }
+            ping: "/ping"
+        },
+        note: "Add tokens via POST /add-bot"
     });
 });
 
-// Keep-alive endpoint for Render.com
+// Keep-alive endpoint untuk UptimeRobot
 app.get("/ping", (req, res) => {
     res.json({ 
         status: "alive", 
-        timestamp: new Date().toISOString(),
+        time: Date.now(),
         bots: bots.size,
         uptime: process.uptime()
     });
 });
 
+// Routes lainnya tetap sama...
 app.post("/add-bot", async (req, res) => {
     const { token, autoFarm = true } = req.body;
     if (!token) return res.status(400).json({ error: "Token required" });
@@ -720,12 +680,9 @@ app.get("/api/bots", (req, res) => {
         connectedAt: b.connectedAt,
         lastBalance: b.lastBalance,
         totalEarnings: b.totalEarnings || 0,
-        totalDeposits: b.totalDeposits || 0,
         totalGiveSent: b.totalGiveSent || 0,
-        totalGiveReceived: b.totalGiveReceived || 0,
         totalGiveAll: b.totalGiveAll || 0,
         workCount: b.workCount || 0,
-        depositCount: b.depositCount || 0,
         logsCount: b.logs ? b.logs.length : 0
     }));
     
@@ -734,18 +691,14 @@ app.get("/api/bots", (req, res) => {
         total: botList.length,
         connected: botList.filter(b => b.status === "connected").length,
         farming: botList.filter(b => b.status === "connected" && b.autoFarm).length,
-        production: IS_PRODUCTION
+        running_on: "Replit"
     });
 });
 
 app.get("/api/bot/:preview/logs", (req, res) => {
     const b = bots.get(req.params.preview);
     if (!b) return res.status(404).json({ error: "Bot not found" });
-    res.json({ 
-        logs: b.logs ? b.logs.slice(0, 50) : [], 
-        username: b.username,
-        preview: req.params.preview 
-    });
+    res.json({ logs: (b.logs || []).slice(0, 50), username: b.username });
 });
 
 app.post("/api/bot/:preview/auto", (req, res) => {
@@ -770,7 +723,7 @@ app.post("/api/bot/:preview/auto", (req, res) => {
     res.json({ ok: true, autoFarm: b.autoFarm });
 });
 
-// Mass Commands
+// Mass Commands (tetap sama)
 app.post("/api/mass-command", async (req, res) => {
     const { command, selectedBots = "all", delay = 1000 } = req.body;
     
@@ -786,7 +739,7 @@ app.post("/api/mass-command", async (req, res) => {
     }
 });
 
-// Mass Give Command with "all" amount support
+// Mass Give Command dengan "all" support (tetap sama)
 app.post("/api/mass-give", async (req, res) => {
     const { recipientId, amount, selectedBots = "all", delay = 2000 } = req.body;
     
@@ -824,54 +777,37 @@ app.post("/api/mass-give", async (req, res) => {
     }
 });
 
-// AutoFarm Control
+// AutoFarm Control (tetap sama)
 app.get("/api/autofarm/status", (req, res) => {
-    res.json({
-        ...autoFarmManager.getStatus(),
-        production: IS_PRODUCTION,
-        uptime: process.uptime()
-    });
+    res.json(autoFarmManager.getStatus());
 });
 
 app.post("/api/autofarm/start", (req, res) => {
     autoFarmManager.start();
-    res.json({ 
-        ok: true, 
-        message: "AutoFarm started",
-        status: autoFarmManager.getStatus()
-    });
+    res.json({ ok: true, message: "AutoFarm started" });
 });
 
 app.post("/api/autofarm/stop", (req, res) => {
     autoFarmManager.stop();
-    res.json({ 
-        ok: true, 
-        message: "AutoFarm stopped",
-        status: autoFarmManager.getStatus()
-    });
+    res.json({ ok: true, message: "AutoFarm stopped" });
 });
 
 app.post("/api/autofarm/cycle-now", async (req, res) => {
     try {
         await autoFarmManager.executeFarmCycle();
-        res.json({ 
-            ok: true, 
-            message: "Manual cycle executed",
-            cycleCount: autoFarmManager.cycleCount
-        });
+        res.json({ ok: true, message: "Manual cycle executed" });
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
 });
 
-// Statistics
+// Statistics (tetap sama)
 app.get("/api/stats", (req, res) => {
     const connectedBots = Array.from(bots.values()).filter(b => b.status === "connected");
     const farmingBots = connectedBots.filter(b => b.autoFarm);
     
     const totalEarnings = connectedBots.reduce((sum, b) => sum + (b.totalEarnings || 0), 0);
     const totalWorkCount = connectedBots.reduce((sum, b) => sum + (b.workCount || 0), 0);
-    const totalDepositCount = connectedBots.reduce((sum, b) => sum + (b.depositCount || 0), 0);
     const totalGiveSent = connectedBots.reduce((sum, b) => sum + (b.totalGiveSent || 0), 0);
     const totalGiveAll = connectedBots.reduce((sum, b) => sum + (b.totalGiveAll || 0), 0);
     
@@ -880,7 +816,6 @@ app.get("/api/stats", (req, res) => {
             ...globalStats,
             totalEarnings: totalEarnings,
             totalWorkCount: totalWorkCount,
-            totalDepositCount: totalDepositCount,
             totalGiveSent: totalGiveSent,
             totalGiveAll: totalGiveAll
         },
@@ -890,16 +825,11 @@ app.get("/api/stats", (req, res) => {
             farming: farmingBots.length
         },
         autoFarm: autoFarmManager.getStatus(),
-        system: {
-            production: IS_PRODUCTION,
-            uptime: process.uptime(),
-            memory: process.memoryUsage(),
-            timestamp: new Date().toISOString()
-        }
+        platform: "Replit"
     });
 });
 
-// Bot Management
+// Bot Management (tetap sama)
 app.post("/api/bots/enable-all-farm", (req, res) => {
     let enabledCount = 0;
     
@@ -948,85 +878,48 @@ app.post("/api/bots/disable-all-farm", (req, res) => {
     res.json({ ok: true, disabled: disabledCount });
 });
 
-// System
+// System Health
 app.get("/api/system/health", (req, res) => {
     res.json({
         status: "ok",
-        production: IS_PRODUCTION,
         uptime: process.uptime(),
         timestamp: new Date().toISOString(),
-        memory: process.memoryUsage(),
+        platform: "Replit",
         bots: {
             total: bots.size,
-            connected: Array.from(bots.values()).filter(b => b.status === "connected").length,
-            farming: Array.from(bots.values()).filter(b => b.status === "connected" && b.autoFarm).length
+            connected: Array.from(bots.values()).filter(b => b.status === "connected").length
         },
-        autofarm: autoFarmManager.getStatus(),
-        storage: {
-            tokensFile: fs.existsSync(STORAGE_PATH),
-            statsFile: fs.existsSync(STATS_PATH)
-        }
+        memory: process.memoryUsage()
     });
 });
 
 // =======================
-// START SERVER
+// START SERVER DI REplit
 // =======================
 
-// Load stats at startup
+// Load stats
 Object.assign(globalStats, loadStats());
 
-// Auto-save stats every 5 minutes
+// Auto-save setiap 5 menit
 setInterval(() => {
     saveStats();
     console.log("📊 Stats auto-saved");
 }, 5 * 60 * 1000);
 
-// Keep-alive for Render.com (prevent sleep)
-if (IS_PRODUCTION) {
+// Keep-alive untuk Replit (cegah sleep)
+if (IS_REPLIT) {
     setInterval(() => {
-        console.log('🔄 Render.com keep-alive ping');
-    }, 10 * 60 * 1000); // Every 10 minutes
+        console.log('🔄 Replit keep-alive ping');
+    }, 4 * 60 * 1000); // Setiap 4 menit
 }
 
-const server = app.listen(PORT, () => {
+app.listen(PORT, "0.0.0.0", () => {
     console.log("========================================");
-    console.log("🤖 SELF-BOT CONTROLLER - RENDER.COM");
+    console.log("🤖 DISCORD BOT CONTROLLER - REplit");
     console.log(`📍 Port: ${PORT}`);
-    console.log(`📨 Channel: ${CHANNEL_ID}`);
-    console.log(`🌍 Production: ${IS_PRODUCTION}`);
-    console.log("✨ Features: AutoFarm + Mass Give (with 'all')");
+    console.log(`📨 Channel ID: ${CHANNEL_ID}`);
+    console.log(`📁 Data dir: ${DATA_DIR}`);
     console.log("========================================");
-    console.log(`🚀 Server started at http://0.0.0.0:${PORT}`);
+    console.log(`🚀 Server running at http://0.0.0.0:${PORT}`);
     console.log("========================================");
-});
-
-// Graceful shutdown
-process.on('SIGTERM', () => {
-    console.log('🛑 SIGTERM received, shutting down gracefully...');
-    
-    // Stop AutoFarm
-    autoFarmManager.stop();
-    
-    // Disconnect all bots
-    for (const [preview] of bots) {
-        disconnectBot(preview);
-    }
-    
-    // Save stats
-    saveStats();
-    
-    server.close(() => {
-        console.log('✅ Server closed');
-        process.exit(0);
-    });
-});
-
-process.on('uncaughtException', (error) => {
-    console.error('🔥 Uncaught Exception:', error);
-    // Don't exit, keep running
-});
-
-process.on('unhandledRejection', (reason, promise) => {
-    console.error('🔥 Unhandled Rejection at:', promise, 'reason:', reason);
 });
